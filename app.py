@@ -37,7 +37,7 @@ WHITELIST_WS_NAME = "Whitelist"
 
 # Malaysia = UTC+8
 MYT = timezone(timedelta(hours=8))
-OPEN_AT = datetime(2025, 9, 9, 18, 25, 0, tzinfo=MYT)   # <<< your opening time
+OPEN_AT = datetime(2025, 9, 10, 18, 55, 0, tzinfo=MYT)   # <<< your opening time
 AUTO_REFRESH_MS_BEFORE = 1000  # 1s refresh before open (countdown)
 AUTO_REFRESH_MS_AFTER  = 2000  # 2s refresh after open (live seat updates)
 
@@ -517,3 +517,4 @@ if st.session_state.get("auth_ok", False):
             del st.session_state[k]
         # replaced experimental API with stable API
         st.rerun()
+
