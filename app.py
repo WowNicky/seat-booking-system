@@ -143,47 +143,50 @@ def load_whitelist_all():
     hmap = {h.strip().lower(): i + 1 for i, h in enumerate(headers)}
     return headers, rows, hmap
 
-def find_whitelist_entry(name, receipt):
-    headers, rows, hmap = load_whitelist_all()
-    if not headers:
-        return None, None
-    idx_name    = hmap.get("name")
-    idx_rcp     = hmap.get("receiptno")
-    idx_allowed = hmap.get("ticketsallowed")
-    idx_used    = hmap.get("ticketsused")
-    idx_contact = hmap.get("contact")
+def find_whitelist_entry(ws_whitelist, name, receipt):
+    """Find whitelist entry by name + receipt, then group by sibling group string."""
+    rows = ws_whitelist.get_all_values()
+    if not rows:
+        return None, 0, 0, "", "", ""
+
+    header = rows[0]
+    idx_name = header.index("Name") + 1
+    idx_rcp = header.index("ReceiptNo") + 1
+    idx_allowed = header.index("TicketsAllowed") + 1
+    idx_used = header.index("TicketsUsed") + 1
+    idx_contact = header.index("Contact") + 1 if "Contact" in header else None
+    idx_paid = header.index("Paid") + 1 if "Paid" in header else None
 
     want_name = normalize_name(name)
-    want_rcp  = str(receipt).strip()
+    want_rcp = str(receipt).strip()
 
-    for i, row in enumerate(rows, start=2):
-        row_name_raw = str(row[idx_name - 1]) if idx_name else ""
-        row_names = [normalize_name(n) for n in row_name_raw.split("/")]
-        r_rcp     = str(row[idx_rcp - 1]).strip() if idx_rcp else ""
+    for i, row in enumerate(rows[1:], start=2):
+        r_name = str(row[idx_name - 1]).strip()
+        r_rcp = str(row[idx_rcp - 1]).strip()
+        if not r_name:
+            continue
 
-        # ✅ Match if typed name is inside sibling group AND receipt matches
-        if any(want_name in rn for rn in row_names) and r_rcp == want_rcp:
-            # --- Collect all rows with SAME sibling group (ignores receipt) ---
+        # Split siblings by "/" and normalize
+        row_names = [normalize_name(n) for n in r_name.split("/")]
+
+        # ✅ Fix: exact match instead of substring
+        if want_name in row_names and r_rcp == want_rcp:
+            row_name_raw = r_name
+
+            # Collect all rows with the same sibling group string
             group_rows = [
-                (j+2, r) for j, r in enumerate(rows)
+                (j + 2, r) for j, r in enumerate(rows)
                 if str(r[idx_name - 1]).strip() == row_name_raw
             ]
 
-            # Combine quotas across receipts
             total_allowed = sum(int(str(r[idx_allowed - 1]).strip() or "0") for _, r in group_rows)
-            total_used    = sum(int(str(r[idx_used - 1]).strip() or "0") for _, r in group_rows)
+            total_used = sum(int(str(r[idx_used - 1]).strip() or "0") for _, r in group_rows)
 
-            entry = {
-                "Name": row_name_raw,
-                "ReceiptNo": want_rcp,
-                "TicketsAllowed": total_allowed,
-                "TicketsUsed": total_used,
-                "Contact": row[idx_contact - 1] if idx_contact else "",
-                "Unlimited": False,
-                "GroupRows": [gr[0] for gr in group_rows]  # store row numbers for update later
-            }
-            return i, entry
-    return None, None
+            contact = row[idx_contact - 1] if idx_contact else ""
+            paid = row[idx_paid - 1] if idx_paid else ""
+            return (i, row), total_allowed, total_used, row_name_raw, contact, paid
+
+    return None, 0, 0, "", "", ""
 
 def refresh_whitelist_by_row(row_number):
     headers, rows, hmap = load_whitelist_all()
@@ -516,5 +519,6 @@ if st.session_state.get("auth_ok", False):
         for k in list(st.session_state.keys()):
             del st.session_state[k]
         st.experimental_rerun()
+
 
 
