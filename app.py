@@ -5,6 +5,28 @@ from datetime import datetime, timezone, timedelta
 import re
 from streamlit_autorefresh import st_autorefresh
 from gspread.exceptions import GSpreadException
+import streamlit.components.v1 as components
+
+# =============================
+# ===== SCREEN WIDTH TEST =====
+# =============================
+# Only run once per session
+if "screen_width" not in st.session_state:
+    # Fallback default
+    st.session_state["screen_width"] = 360
+
+    # JS to send actual viewport width to Streamlit
+    width_js = """
+    <script>
+    function sendWidth() {
+        const w = window.innerWidth;
+        window.parent.postMessage({isStreamlitMessage:true, type:"SCREEN_WIDTH", width:w}, "*");
+    }
+    sendWidth();
+    window.addEventListener('resize', sendWidth);
+    </script>
+    """
+    components.html(width_js, height=0)
 
 # =============================
 # ===== CONFIGURATION =====
@@ -96,16 +118,10 @@ def get_seats():
     return records
 
 def get_seats_per_row():
-    """Return number of seat buttons per row depending on screen width."""
-    # Approximate button width + padding in pixels
-    MAX_BTN_WIDTH = 70
-    PADDING = 10
-    # Default fallback width (for phones)
-    screen_width = 360
-    try:
-        screen_width = int(st.experimental_get_query_params().get("screen_width", [360])[0])
-    except:
-        pass
+    """Calculate seats per row dynamically based on actual screen width."""
+    MAX_BTN_WIDTH = 70  # Approx button width in px
+    PADDING = 10        # Approx spacing between buttons
+    screen_width = st.session_state.get("screen_width", 360)
     seats_per_row = max(1, screen_width // (MAX_BTN_WIDTH + PADDING))
     return seats_per_row
 
@@ -507,5 +523,6 @@ if st.session_state.get("auth_ok", False):
         for k in list(st.session_state.keys()):
             del st.session_state[k]
         st.experimental_rerun()
+
 
 
