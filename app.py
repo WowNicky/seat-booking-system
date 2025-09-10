@@ -490,7 +490,8 @@ if st.session_state.get("confirmed", False):
 if st.session_state.get("auth_ok", False):
     st.markdown("---")  # separator line
     # Styled button
-    if st.button("🚪 Logout", key="logout_bottom"):
+    if st.button("Logout", key="logout_bottom"):
         for k in list(st.session_state.keys()):
             del st.session_state[k]
         st.experimental_rerun()
+
