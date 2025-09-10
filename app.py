@@ -95,6 +95,20 @@ def get_seats():
             r["Status"] = "reserved"
     return records
 
+def get_seats_per_row():
+    """Return number of seat buttons per row depending on screen width."""
+    # Approximate button width + padding in pixels
+    MAX_BTN_WIDTH = 70
+    PADDING = 10
+    # Default fallback width (for phones)
+    screen_width = 360
+    try:
+        screen_width = int(st.experimental_get_query_params().get("screen_width", [360])[0])
+    except:
+        pass
+    seats_per_row = max(1, screen_width // (MAX_BTN_WIDTH + PADDING))
+    return seats_per_row
+
 def update_seat_atomic(seat_id, name, phone):
     try:
         cell = seats_ws.find(seat_id)
@@ -373,26 +387,25 @@ st.subheader(f"Select Your Seat — {selected_section}")
 current_selected = st.session_state["selected_seats"]
 can_select_more = (len(current_selected) < remaining)
 
-for r in rows:
-    cols_ui = st.columns(len(cols))
-    for i, c in enumerate(cols):
-        seat = next(
-            (s for s in filtered_seats
-             if str(s.get("Row", "")).strip() == str(r).strip()
-             and int(str(s.get("Col", "")).strip()) == int(c)), None
-        )
-        if not seat:
-            cols_ui[i].write("")
-            continue
+seats_per_row = get_seats_per_row()
+
+# Flatten filtered seats by row+col sorting
+filtered_seats_sorted = sorted(filtered_seats, key=lambda x: (str(x.get("Row","")), int(str(x.get("Col","") or 0))))
+
+# Render seats dynamically in rows
+for i in range(0, len(filtered_seats_sorted), seats_per_row):
+    row_seats = filtered_seats_sorted[i:i+seats_per_row]
+    cols = st.columns(len(row_seats))
+    for col, seat in zip(cols, row_seats):
         label = str(seat.get("SeatID", "")).strip()
         status = str(seat.get("Status", "")).strip().lower()
         is_selected = label in current_selected
         if status == "reserved":
-            cols_ui[i].button(label, key=label, disabled=True, help="Reserved")
+            col.button(label, key=label, disabled=True, help="Reserved")
         else:
             disabled = (not is_selected) and (not can_select_more)
             btn_label = ("✅ " if is_selected else "") + label
-            if cols_ui[i].button(btn_label, key=label, disabled=disabled):
+            if col.button(btn_label, key=label, disabled=disabled):
                 if is_selected:
                     st.session_state["selected_seats"].remove(label)
                 else:
@@ -494,4 +507,5 @@ if st.session_state.get("auth_ok", False):
         for k in list(st.session_state.keys()):
             del st.session_state[k]
         st.experimental_rerun()
+
 
