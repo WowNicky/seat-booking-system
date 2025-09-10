@@ -23,7 +23,14 @@ AUTO_REFRESH_MS_AFTER  = 2000  # 2s refresh after open (live seat updates)
 # ====== AUTH =========
 # =====================
 scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-creds = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope)
+
+# Load service account from Streamlit secrets
+creds_dict = st.secrets["gcp_service_account"]
+
+# Create credentials object
+creds = ServiceAccountCredentials.from_json_keyfile_dict(dict(creds_dict), scope)
+
+# Authorize with Google Sheets
 client = gspread.authorize(creds)
 
 try:
@@ -476,3 +483,4 @@ if st.session_state.get("confirmed", False):
             for k in list(st.session_state.keys()):
                 del st.session_state[k]
         st.stop()
+
