@@ -170,7 +170,7 @@ def find_whitelist_entry(ws_whitelist, name, receipt):
         row_names = [normalize_name(n) for n in r_name.split("/")]
 
         # ✅ Fix: exact match instead of substring
-        if want_name in row_names and r_rcp == want_rcp:
+        if any(want_name in r or r in want_name for r in row_names) and r_rcp == want_rcp:
             row_name_raw = r_name
 
             # Collect all rows with the same sibling group string
@@ -519,6 +519,7 @@ if st.session_state.get("auth_ok", False):
         for k in list(st.session_state.keys()):
             del st.session_state[k]
         st.experimental_rerun()
+
 
 
 
