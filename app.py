@@ -485,31 +485,32 @@ if st.session_state.get("confirmed", False):
         st.stop()
 
 # ==========================
-# ===== GLOBAL LOGOUT ======
+# ===== LOGOUT BUTTON =====
 # ==========================
-st.markdown("<br><br><br>", unsafe_allow_html=True)  # some spacing from content
-st.markdown(
-    """
-    <div style='text-align:center; margin-top:40px;'>
-        <form>
-            <input type='button' value='🚪 Logout' id='logoutBtn' style='
-                background-color:#ff6666;
-                color:white;
-                font-size:18px;
-                font-weight:bold;
-                padding:10px 30px;
-                border:none;
-                border-radius:8px;
-                cursor:pointer;
-            ' onclick='window.location.reload();'>
-        </form>
-    </div>
-    """,
-    unsafe_allow_html=True
-)
+if st.session_state.get("auth_ok", False):
+    st.markdown("---")  # separator line
+    st.markdown(
+        """
+        <div style="text-align:center; margin-top:20px;">
+            <form>
+                <button style="
+                    background-color:#ff6666;
+                    color:white;
+                    font-size:18px;
+                    font-weight:bold;
+                    padding:10px 30px;
+                    border:none;
+                    border-radius:8px;
+                    cursor:pointer;
+                ">🚪 Logout</button>
+            </form>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
 
-# Actually clear session when pressed
-if st.button("🚪 Logout (Safe)"):
-    for k in list(st.session_state.keys()):
-        del st.session_state[k]
-    st.experimental_rerun()
+    # Actual logout action
+    if st.button("Logout Now", key="logout_bottom"):
+        for k in list(st.session_state.keys()):
+            del st.session_state[k]
+        st.experimental_rerun()
