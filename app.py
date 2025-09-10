@@ -212,7 +212,7 @@ for key, default in {
 if not st.session_state["auth_ok"]:
     st.subheader("Enter Your Details")
     with st.form("user_form"):
-        name_input = st.text_input("Full Name (as per your purchase record)")
+        name_input = st.text_input("Full Name (Performer name)")
         contact_input = st.text_input("Contact Number (digits only)")
         rcp_input = st.text_input("Receipt Number (exp: SR-240000)")
         submitted = st.form_submit_button("Verify")
@@ -483,4 +483,5 @@ if st.session_state.get("confirmed", False):
             for k in list(st.session_state.keys()):
                 del st.session_state[k]
         st.stop()
+
 
