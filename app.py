@@ -236,7 +236,7 @@ if not st.session_state["auth_ok"]:
     with st.form("user_form"):
         name_input = st.text_input("Full Name (Performer name)")
         contact_input = st.text_input("Contact Number (digits only)")
-        rcp_input = st.text_input("Receipt Number (exp: SR-240000)")
+        rcp_input = st.text_input("Receipt Number (exp: SR-244000)")
         submitted = st.form_submit_button("Verify")
     if submitted:
         row_no, entry = find_whitelist_entry(name_input, rcp_input)
@@ -516,3 +516,4 @@ if st.session_state.get("auth_ok", False):
         for k in list(st.session_state.keys()):
             del st.session_state[k]
         st.experimental_rerun()
+
