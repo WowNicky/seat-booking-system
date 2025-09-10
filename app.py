@@ -82,7 +82,7 @@ def normalize_name(x: str) -> str:
     """Lowercase, strip, remove all spaces and special chars for flexible matching."""
     return re.sub(r"[^a-z0-9]", "", str(x).lower())
 
-@st.cache_data(ttl=3)
+@st.cache_data(ttl=20)
 def get_seats():
     records = seats_ws.get_all_records()
     for r in records:
@@ -440,14 +440,14 @@ if st.session_state["selected_seats"]:
         if success == 0:
             st.error("❌ Booking failed. Please try again.")
             st.session_state["selected_seats"] = []
-            st.cache_data.clear()
+            st.session_state["seats_cache"] = get_seats()
             st.rerun()
         new_used = min(allowed, used + success)
         if update_tickets_used(st.session_state["wl_row"], new_used, hmap):
             st.session_state["confirmed"] = True
             st.session_state["selected_seats"] = []
             st.success(f"🎉 Booking confirmed! Seats reserved: {success}")
-            st.cache_data.clear()
+            st.session_state["seats_cache"] = get_seats()
             st.rerun()
         else:
             st.error("Booked seats but failed to update ticket usage. Contact admins.")
@@ -483,4 +483,3 @@ if st.session_state.get("confirmed", False):
             for k in list(st.session_state.keys()):
                 del st.session_state[k]
         st.stop()
-
