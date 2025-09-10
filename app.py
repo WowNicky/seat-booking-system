@@ -484,4 +484,40 @@ if st.session_state.get("confirmed", False):
                 del st.session_state[k]
         st.stop()
 
+# ==========================
+# ===== FLOATING LOGOUT =====
+# ==========================
+st.markdown(
+    """
+    <style>
+    #floatingLogout {
+        position: fixed;
+        bottom: 20px;
+        left: 50%;
+        transform: translateX(-50%);
+        background-color: #ff6666;
+        color: white;
+        font-size: 18px;
+        font-weight: bold;
+        padding: 10px 30px;
+        border: none;
+        border-radius: 8px;
+        cursor: pointer;
+        z-index: 9999;
+    }
+    </style>
+    <div>
+        <button id="floatingLogout" onclick="document.getElementById('stLogoutTrigger').click();">🚪 Logout</button>
+    </div>
+    """,
+    unsafe_allow_html=True
+)
 
+# Hidden Streamlit button to actually clear session
+if 'stLogoutTrigger' not in st.session_state:
+    st.session_state.stLogoutTrigger = False
+
+if st.button("stLogoutTrigger", key="stLogoutTrigger", label=""):
+    for k in list(st.session_state.keys()):
+        del st.session_state[k]
+    st.experimental_rerun()
