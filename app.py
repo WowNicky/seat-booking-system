@@ -16,7 +16,7 @@ WHITELIST_WS_NAME = "Whitelist"
 
 # Malaysia = UTC+8
 MYT = timezone(timedelta(hours=8))
-OPEN_AT = datetime(2025, 9, 10, 18, 55, 0, tzinfo=MYT)   # <<< your opening time
+OPEN_AT = datetime(2025, 9, 12, 19, 10, 0, tzinfo=MYT)   # <<< your opening time
 AUTO_REFRESH_MS_BEFORE = 1000  # 1s refresh before open (countdown)
 AUTO_REFRESH_MS_AFTER  = 2000  # 2s refresh after open (live seat updates)
 
@@ -263,7 +263,7 @@ if not st.session_state["tnc_ok"]:
 
     agree = st.checkbox("✅ I have read and agree to the above Terms & Conditions")
 
-    if st.button("Proceed to Seat Selection", disabled=not agree):
+    if agree:
         st.session_state["tnc_ok"] = True
         st.rerun()
 
@@ -327,9 +327,13 @@ with st.container():
         st.rerun()
     st.markdown('</div>', unsafe_allow_html=True)
 
-# =================================
+from streamlit_autorefresh import st_autorefresh
+
+# =============================
 # ===== OPENING TIME GATE =====
-# =================================
+# =============================
+from streamlit_autorefresh import st_autorefresh
+
 now = now_myt()
 if now < OPEN_AT:
     st.warning(f"⏳ Seat selection opens at {OPEN_AT.strftime('%Y-%m-%d %H:%M:%S %Z')}")
@@ -372,12 +376,24 @@ if now < OPEN_AT:
     """
     st.components.v1.html(countdown_html, height=200)
 
+    # --- Fallback: auto-refresh every 5s until open ---
+    remaining_sec = int((OPEN_AT - now).total_seconds())
+
+    # If more than 6s left → schedule a one-time refresh at (remaining_sec - 6) seconds
+    if remaining_sec > 6:
+        st_autorefresh(interval=(remaining_sec - 6) * 1000, key="one_time_jump")
+
+    # Inside last 6s → refresh every 3s
+    elif 0 < remaining_sec <= 6:
+        st_autorefresh(interval=3000, key="countdown_refresh")
+
     st.info("This page will refresh once the countdown ends. Please wait...")
     st.stop()
 
 # ===================================================
 # ======== LIVE SEAT MAP (no auto-refresh) ==========
 # ===================================================
+st.success("🎉 Seat selection is now open! Render seat map here...")
 if "seats_cache" not in st.session_state:
     st.session_state["seats_cache"] = get_seats()
 seats = st.session_state["seats_cache"]
@@ -532,4 +548,3 @@ if st.session_state.get("auth_ok", False):
             del st.session_state[k]
         # replaced experimental API with stable API
         st.rerun()
-
