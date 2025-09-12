@@ -8,27 +8,6 @@ from gspread.exceptions import GSpreadException
 import streamlit.components.v1 as components
 
 # =============================
-# ===== SCREEN WIDTH TEST =====
-# =============================
-# Only run once per session
-if "screen_width" not in st.session_state:
-    # Fallback default
-    st.session_state["screen_width"] = 360
-
-    # JS to send actual viewport width to Streamlit
-    width_js = """
-    <script>
-    function sendWidth() {
-        const w = window.innerWidth;
-        window.parent.postMessage({isStreamlitMessage:true, type:"SCREEN_WIDTH", width:w}, "*");
-    }
-    sendWidth();
-    window.addEventListener('resize', sendWidth);
-    </script>
-    """
-    components.html(width_js, height=0)
-
-# =============================
 # ===== CONFIGURATION =====
 # =============================
 SHEET_NAME = "Event_Seats"
@@ -273,6 +252,7 @@ else:
 
 if remaining <= 0:
     st.error("You have already used up all your tickets. (Access locked)")
+    st.info("If you would like to purchase additional tickets, please contact the admin team before proceeding with seat booking.")
     if st.button("Logout"):
         for k in list(st.session_state.keys()):
             del st.session_state[k]
@@ -493,14 +473,14 @@ if st.session_state.get("confirmed", False):
         rem = 0
     if rem <= 0:
         st.success(f"🎉 Thank you {st.session_state['user_name']}! Your booking is confirmed.")
-        st.info("You have used up all your tickets. Access is now closed.")
+        st.info("You have used all your available tickets. Access is now closed.")
         if st.button("Logout"):
             for k in list(st.session_state.keys()):
                 del st.session_state[k]
         st.stop()
     else:
         st.success(f"🎉 Booking confirmed! You still have {rem} ticket(s) remaining.")
-        st.info("You may book the rest later. Or logout now.")
+        st.info("You may continue to book the rest. Or logout now.")
         if st.button("Logout"):
             for k in list(st.session_state.keys()):
                 del st.session_state[k]
@@ -517,4 +497,3 @@ if st.session_state.get("auth_ok", False):
             del st.session_state[k]
         # replaced experimental API with stable API
         st.rerun()
-
