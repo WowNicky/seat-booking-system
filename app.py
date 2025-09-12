@@ -234,9 +234,44 @@ if not st.session_state["auth_ok"]:
             "selected_seats": [],
             "confirmed": False,
         })
-        st.success("✅ Verified! You will see the countdown or seat map depending on time.")
+        st.success("✅ Verified! Please review the Terms & Conditions.")
         st.rerun()
     st.stop()
+
+# ==============================
+# ===== T&C / INSTRUCTIONS =====
+# ==============================
+if "tnc_ok" not in st.session_state:
+    st.session_state["tnc_ok"] = False
+
+if not st.session_state["tnc_ok"]:
+    st.title("📜 Terms & Conditions / Instructions")
+
+    st.markdown("""
+    ### Please read carefully before booking:
+    1. Each ticket allows you to reserve one seat only.
+    2. Once confirmed, seats cannot be changed. Please check before confirming.
+    3. If you have used all your tickets, access will be locked.
+    4. Additional tickets can only be purchased through the admin team.
+    5. The system will lock automatically after quota is reached.
+    6. Please be considerate — do not hold seats without confirming.
+    7. Siblings can use **one account** to purchase all their tickets together.
+
+    ---
+    **Note:** The event team reserves the right to adjust seating arrangements, ticket allocation, or system access if necessary to ensure fairness and smooth operation.
+    """)
+
+    agree = st.checkbox("✅ I have read and agree to the above Terms & Conditions")
+
+    if st.button("Proceed to Seat Selection", disabled=not agree):
+        st.session_state["tnc_ok"] = True
+        st.rerun()
+
+    st.stop()
+
+# ===============================
+# ===== QUOTA & SEAT FLOW ====
+# ===============================
 
 _, row, hmap = refresh_whitelist_by_row(st.session_state.get("wl_row"))
 if row and hmap:
@@ -497,3 +532,4 @@ if st.session_state.get("auth_ok", False):
             del st.session_state[k]
         # replaced experimental API with stable API
         st.rerun()
+
