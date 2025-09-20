@@ -16,7 +16,8 @@ WHITELIST_WS_NAME = "Whitelist"
 
 # Malaysia = UTC+8
 MYT = timezone(timedelta(hours=8))
-OPEN_AT = datetime(2025, 9, 12, 19, 23, 0, tzinfo=MYT)   # <<< your opening time
+OPEN_AT = datetime(2025, 9, 30, 8, 0, 0, tzinfo=MYT)   # <<< your opening time
+CUTOFF_DATETIME = datetime(2025, 10, 4, 0, 0, 0, tzinfo=MYT)
 AUTO_REFRESH_MS_BEFORE = 1000  # 1s refresh before open (countdown)
 AUTO_REFRESH_MS_AFTER  = 2000  # 2s refresh after open (live seat updates)
 
@@ -85,8 +86,9 @@ def normalize_name(x: str) -> str:
 
 @st.cache_data(ttl=20)
 def get_seats():
-    records = seats_ws.get_all_records()
-    for r in records:
+    rows = seats_ws.get_all_records()
+    records = []
+    for i, r in enumerate(rows, start=2):
         reserved_by = str(r.get("ReservedBy", "")).strip()
         phone = str(r.get("PhoneNo", "")).strip()
         status = str(r.get("Status", "")).strip().lower()
@@ -94,23 +96,39 @@ def get_seats():
             r["Status"] = "available"
         elif status != "reserved":
             r["Status"] = "reserved"
+        r["_row"] = i  # save sheet row for later update
+        records.append(r)
     return records
 
-def update_seat_atomic(seat_id, name, phone):
-    try:
-        cell = seats_ws.find(seat_id)
-    except GSpreadException as e:
-        st.error(f"Google Sheets error: {e}")
-    row = cell.row
-    current_status = str(seats_ws.cell(row, 5).value).strip().lower()
+def get_seats_fresh():
+    """Bypass cache for latest seat data (for confirmation)."""
+    st.cache_data.clear()  # clear just before reading
+    return get_seats()
+
+def update_seat_atomic(seat_id, name, phone, fresh_seats):
+    """
+    Reserve a seat without extra .cell() API calls.
+    fresh_seats = result of get_seats(), already cached.
+    """
+    seat = next((s for s in fresh_seats if s["SeatID"] == seat_id), None)
+    if not seat:
+        return False
+
+    current_status = str(seat.get("Status", "")).strip().lower()
     if current_status not in ["", "available"]:
         return False
-    seats_ws.batch_update([
-        {"range": f"E{row}", "values": [["reserved"]]},
-        {"range": f"F{row}", "values": [[name]]},
-        {"range": f"G{row}", "values": [[phone]]},
-    ])
-    return True
+
+    try:
+        row = int(seat.get("_row", 0))  # add row index when loading seats
+        seats_ws.batch_update([
+            {"range": f"E{row}", "values": [["reserved"]]},
+            {"range": f"F{row}", "values": [[name]]},
+            {"range": f"G{row}", "values": [[phone]]},
+        ])
+        return True
+    except Exception as e:
+        st.error(f"⚠️ Could not update seat {seat_id}: {e}")
+        return False
 
 @st.cache_data(ttl=10)
 def load_whitelist_all():
@@ -192,6 +210,91 @@ def update_tickets_used(row_number, new_used, hmap):
         st.error(f"⚠️ Could not update TicketsUsed: {e}")
         return False
 
+def get_user_reserved_seats_global(name, seats=None):
+    """
+    Return list of (row_num, SeatID) reserved under `name`.
+    Uses cached seats if provided.
+    """
+    if seats is None:
+        seats = get_seats()
+    reserved = []
+    for r in seats:
+        if str(r.get("ReservedBy", "")).strip() == str(name).strip():
+            reserved.append((r.get("_row"), str(r.get("SeatID", "")).strip()))
+    return reserved
+
+def release_all_user_seats_global(name, seats=None):
+    """
+    Release all seats reserved under `name` in the Seats worksheet.
+    Returns list of freed SeatIDs.
+    """
+    if seats is None:
+        seats = get_seats()
+    reserved = get_user_reserved_seats_global(name, seats)
+    ops, freed = [], []
+    for row_num, seatid in reserved:
+        ops.append({"range": f"E{row_num}", "values": [["available"]]})
+        ops.append({"range": f"F{row_num}", "values": [[""]]})
+        ops.append({"range": f"G{row_num}", "values": [[""]]})
+        freed.append(seatid)
+    if ops:
+        try:
+            seats_ws.batch_update(ops)
+        except Exception as e:
+            st.error(f"Could not release seats: {e}")
+            return []
+    return freed
+
+def change_seats_action():
+    seats = get_seats()  # reuse cached seats
+    freed = release_all_user_seats_global(st.session_state["user_name"], seats)
+    """
+    Release all seats, update TicketsUsed in whitelist, clear caches and session,
+    then rerun so user immediately sees seat selection page.
+    """
+    freed = release_all_user_seats_global(st.session_state["user_name"])
+    # refresh whitelist row (read current sheet)
+    _, row, hmap = refresh_whitelist_by_row(st.session_state.get("wl_row"))
+    new_used = st.session_state.get("tickets_used", 0)
+    allowed = st.session_state.get("tickets_allowed", 0)
+
+    if row and hmap:
+        try:
+            used = int(str(row[hmap["ticketsused"] - 1]).strip() or "0")
+        except Exception:
+            used = st.session_state.get("tickets_used", 0)
+        new_used = max(0, used - len(freed))
+        ok = update_tickets_used(st.session_state["wl_row"], new_used, hmap)
+        try:
+            # Also refresh tickets_allowed (in case admin changed)
+            allowed = int(str(row[hmap["ticketsallowed"] - 1]).strip() or "0")
+        except Exception:
+            allowed = st.session_state.get("tickets_allowed", allowed)
+    else:
+        ok = True
+
+    # Clear caches so subsequent reads are fresh (fixes "two clicks" issue).
+    try:
+        st.cache_data.clear()
+    except Exception:
+        pass
+
+    # Reset session state for selection flow
+    st.session_state["confirmed"] = False
+    st.session_state["selected_seats"] = []
+    st.session_state["last_booked"] = []
+    st.session_state["tickets_used"] = new_used
+    st.session_state["tickets_allowed"] = allowed
+    st.session_state["seats_cache"] = get_seats()
+
+    if ok:
+        st.success("✅ Released your seats. No seats are currently reserved under your name. You can now reselect seats.")
+        # Rerun to immediately show the seat selection UI.
+        st.rerun()
+    else:
+        st.error("Released seats but failed to update ticket usage. Please contact admin.")
+        st.rerun()
+
 # ======================================
 # ====== LOGIN / ACCESS CONTROL ========
 # ======================================
@@ -245,23 +348,37 @@ if "tnc_ok" not in st.session_state:
     st.session_state["tnc_ok"] = False
 
 if not st.session_state["tnc_ok"]:
-    st.title("📜 Terms & Conditions / Instructions")
+    st.title("📜 Terms & Conditions / Important Notes")
 
-    st.markdown("""
+    st.markdown(f"""
     ### Please read carefully before booking:
-    1. Each ticket allows you to reserve one seat only.
-    2. Once confirmed, seats cannot be changed. Please check before confirming.
-    3. If you have used all your tickets, access will be locked.
-    4. Additional tickets can only be purchased through the admin team.
-    5. The system will lock automatically after quota is reached.
-    6. Please be considerate — do not hold seats without confirming.
-    7. Siblings can use **one account** to purchase all their tickets together.
+
+    1. Each ticket allows you to reserve **one seat only**.  
+    2. Once confirmed, seats cannot be changed unless you press **Change Seats** to release and reselect.  
+    3. **Changing seats will release all seats under your account.** If you intend to free seats, press **Change Seats** on the booking page.  
+    4. If you have used all your tickets, access will be locked.  
+    5. Additional tickets can only be purchased through the admin team.  
+    6. The system will lock automatically once your quota is reached.  
+    6. Please be considerate — do not hold seats without confirming.  
+    7. Siblings can use **one account** to purchase all their tickets together.  
 
     ---
+
+    ### ⚠️ Important Notes:
+    - After clicking a seat, please **wait a few seconds** for the system to load and update.  
+    - Avoid pressing refresh too quickly — the system auto-refreshes where needed.  
+    - If your seat selection does not appear instantly, wait and try again.  
+    - For any issues (quota mismatch, missing seats, etc.), please contact the admin team immediately.  
+    - Pressing **Change Seats** will release *all* seats reserved under your name and will update your tickets used accordingly. Think carefully before changing — you can reselect seats afterwards, but this action will free the seats for others.
+
+    ---
+
     **Note:** The event team reserves the right to adjust seating arrangements, ticket allocation, or system access if necessary to ensure fairness and smooth operation.
+
     """)
 
-    agree = st.checkbox("✅ I have read and agree to the above Terms & Conditions")
+    st.error(f"Seat booking will close after {CUTOFF_DATETIME.strftime('%d %B %Y %H:%M')}.")
+    agree = st.checkbox("I have read and agree to the above Terms & Conditions")
 
     if agree:
         st.session_state["tnc_ok"] = True
@@ -269,10 +386,22 @@ if not st.session_state["tnc_ok"]:
 
     st.stop()
 
+# =========================
+# ===== CUTOFF CHECK ======
+# =========================
+now = now_myt()  # use your helper with timezone
+if now > CUTOFF_DATETIME:
+    st.error(f"⛔ Seat booking has closed after {CUTOFF_DATETIME.strftime('%d %B %Y %H:%M')}.")
+    st.info("You can no longer view, change, or select seats. For any changes, please contact the admin team.")
+    if st.button("Logout"):
+        for k in list(st.session_state.keys()):
+            del st.session_state[k]
+        st.rerun()
+    st.stop()
+
 # ===============================
 # ===== QUOTA & SEAT FLOW ====
 # ===============================
-
 _, row, hmap = refresh_whitelist_by_row(st.session_state.get("wl_row"))
 if row and hmap:
     idx_allowed = hmap.get("ticketsallowed")
@@ -286,11 +415,56 @@ else:
     remaining = (allowed - used) if not st.session_state.get("unlimited") else 10**9
 
 if remaining <= 0:
+    # User has no remaining tickets according to sheet. Show reserved seats and allow "Change Seats".
     st.error("You have already used up all your tickets. (Access locked)")
+
+    # get seats reserved by this user (if any)
+    def get_user_reserved_seats(name):
+        rows = seats_ws.get_all_records()
+        reserved = []
+        for i, r in enumerate(rows, start=2):
+            if str(r.get("ReservedBy", "")).strip() == str(name).strip():
+                reserved.append((i, str(r.get("SeatID", "")).strip()))
+        return reserved
+
+    def release_all_user_seats(name):
+        reserved = get_user_reserved_seats(name)
+        ops = []
+        freed = []
+        for row, seatid in reserved:
+            ops.append({"range": f"E{row}", "values": [["available"]]})
+            ops.append({"range": f"F{row}", "values": [[""]]})
+            ops.append({"range": f"G{row}", "values": [[""]]})
+            freed.append(seatid)
+        if ops:
+            try:
+                seats_ws.batch_update(ops)
+            except Exception as e:
+                st.error(f"Could not release seats: {e}")
+                return []
+        return freed
+
+    reserved = get_user_reserved_seats(st.session_state["user_name"])
+    reserved_seat_ids = [s for _, s in reserved]
+
+    if reserved_seat_ids:
+        st.info("✅ Seats currently reserved under your name: " + ", ".join(reserved_seat_ids))
+    else:
+        st.info("No seats currently reserved under your name.")
+
     st.info("If you would like to purchase additional tickets, please contact the admin team before proceeding with seat booking.")
-    if st.button("Logout"):
-        for k in list(st.session_state.keys()):
-            del st.session_state[k]
+
+    st.warning("⚠️ Changing seats will release all seats reserved under your account and update your tickets used. Think carefully before proceeding — you can reselect seats afterwards.")
+    if st.button("🔄 Change Seats", key="change_seats_btn"):
+        change_seats_action()
+
+    if st.session_state.get("auth_ok", False):
+        st.markdown("---")  # separator line
+        if st.button("Logout", key="logout_bottom"):
+            for k in list(st.session_state.keys()):
+                del st.session_state[k]
+            st.rerun()
+
     st.stop()
 
 # --- Dynamic quota (auto updates when selecting seats) ---
@@ -421,6 +595,8 @@ except ValueError:
     st.error("Column values must be numeric in 'Col' column.")
     st.stop()
 
+# Mobile orientation tip
+st.info("📱 For best viewing on mobile, please rotate your phone to **landscape mode** while selecting seats.")
 st.subheader(f"Select Your Seat — {selected_section}")
 
 current_selected = st.session_state["selected_seats"]
@@ -458,48 +634,55 @@ for r in rows:
 # ======================
 if st.session_state["selected_seats"]:
     st.info(f"Selected seats: {', '.join(st.session_state['selected_seats'])}")
-    col1, col2, col3 = st.columns([3,2,3])
+
+    # Centered confirm button only
+    col1, col2, col3 = st.columns([3, 2, 3])
     with col2:
-        c1, c2 = st.columns(2)
-        confirm_clicked = c1.button("✅ Confirm")
-        reconsider_clicked = c2.button("🔄 Reconsider")
+        confirm_clicked = st.button("✅ Confirm", key="confirm_btn")
 
     if confirm_clicked:
         _, row, hmap = refresh_whitelist_by_row(st.session_state.get("wl_row"))
         if not (row and hmap):
             st.error("Could not verify your ticket quota. Please try again.")
             st.stop()
+
         allowed = int(str(row[hmap["ticketsallowed"] - 1]).strip() or "0")
         used    = int(str(row[hmap["ticketsused"] - 1]).strip() or "0")
         fresh_remaining = allowed - used if not st.session_state.get("unlimited") else 10**9
+
         if len(st.session_state["selected_seats"]) > fresh_remaining:
             st.error(f"You selected {len(st.session_state['selected_seats'])} seats but only {fresh_remaining} remaining. Please deselect some seats.")
             st.stop()
-        fresh_seats = get_seats()
-        success = 0
-        failed_list = []
+
+        # When confirming seats
+        fresh_seats = get_seats_fresh()  # always latest from Google Sheets
+        success_list, failed_list = [], []
+
         for seat_id in list(st.session_state["selected_seats"]):
-            seat = next((s for s in fresh_seats if s["SeatID"] == seat_id), None)
-            if not seat or str(seat.get("Status", "")).strip().lower() == "reserved":
-                failed_list.append(seat_id)
+            ok = update_seat_atomic(seat_id, st.session_state["user_name"], st.session_state["contact"], fresh_seats)
+            if ok:
+                success_list.append(seat_id)
             else:
-                ok = update_seat_atomic(seat_id, st.session_state["user_name"], st.session_state["contact"])
-                if ok:
-                    success += 1
-                else:
-                    failed_list.append(seat_id)
+                failed_list.append(seat_id)
+
         if failed_list:
             st.error("❌ Some seats were already taken: " + ", ".join(failed_list))
-        if success == 0:
+
+        if len(success_list) == 0:
             st.error("❌ Booking failed. Please try again.")
             st.session_state["selected_seats"] = []
             st.session_state["seats_cache"] = get_seats()
             st.rerun()
-        new_used = min(allowed, used + success)
+
+        # update tickets used immediately and store last_booked for UI
+        new_used = min(allowed, used + len(success_list))
         if update_tickets_used(st.session_state["wl_row"], new_used, hmap):
             st.session_state["confirmed"] = True
             st.session_state["selected_seats"] = []
-            st.success(f"🎉 Booking confirmed! Seats reserved: {success}")
+            st.session_state["last_booked"] = success_list
+            st.session_state["tickets_used"] = new_used   # ✅ update immediately
+            st.session_state["tickets_allowed"] = allowed # ✅ ensure quota reflects latest
+            st.success(f"🎉 Booking confirmed! Your seats: {', '.join(success_list)}.")
             st.session_state["seats_cache"] = get_seats()
             st.rerun()
         else:
@@ -522,20 +705,91 @@ if st.session_state.get("confirmed", False):
         rem     = allowed - used if not st.session_state.get("unlimited") else 10**9
     else:
         rem = 0
+
+    # helper already used earlier; re-declare locally if needed
+    def get_user_reserved_seats(name):
+        rows = seats_ws.get_all_records()
+        reserved = []
+        for i, r in enumerate(rows, start=2):
+            if str(r.get("ReservedBy", "")).strip() == str(name).strip():
+                reserved.append((i, str(r.get("SeatID", "")).strip()))
+        return reserved
+
+    def release_all_user_seats(name):
+        reserved = get_user_reserved_seats(name)
+        ops = []
+        freed = []
+        for row_num, seatid in reserved:
+            ops.append({"range": f"E{row_num}", "values": [["available"]]})
+            ops.append({"range": f"F{row_num}", "values": [[""]]})
+            ops.append({"range": f"G{row_num}", "values": [[""]]})
+            freed.append(seatid)
+        if ops:
+            try:
+                seats_ws.batch_update(ops)
+            except Exception as e:
+                st.error(f"Could not release seats: {e}")
+                return []
+        return freed
+
+    # read currently reserved seats (live from sheet)
+    reserved = get_user_reserved_seats(st.session_state["user_name"])
+    reserved_ids = [s for _, s in reserved]
+
     if rem <= 0:
-        st.success(f"🎉 Thank you {st.session_state['user_name']}! Your booking is confirmed.")
-        st.info("You have used all your available tickets. Access is now closed.")
-        if st.button("Logout"):
-            for k in list(st.session_state.keys()):
-                del st.session_state[k]
+        # All tickets used
+        st.success(f"🎉 Thank you {st.session_state['user_name']} — your booking is confirmed.")
+        if st.session_state.get("last_booked"):
+            st.info("✅ Seats booked (latest): " + ", ".join(st.session_state["last_booked"]))
+        elif reserved_ids:
+            st.info("✅ Seats booked: " + ", ".join(reserved_ids))
+        st.info("You have used all your tickets. For additional tickets, please contact the admin team.")
+        col1, col2 = st.columns([2,1])
+        with col1:
+            if st.button("🔄 Change Seats"):
+                freed = release_all_user_seats(st.session_state["user_name"])
+                # update whitelist used count (reduce by number freed)
+                _, row, hmap = refresh_whitelist_by_row(st.session_state.get("wl_row"))
+                if row and hmap:
+                    used = int(str(row[hmap["ticketsused"] - 1]).strip() or "0")
+                    new_used = max(0, used - len(freed))
+                    update_tickets_used(st.session_state["wl_row"], new_used, hmap)
+                # reset session and go back to selection
+                st.session_state["confirmed"] = False
+                st.session_state["selected_seats"] = []
+                st.session_state["last_booked"] = []
+                st.session_state["seats_cache"] = get_seats()
+                st.success("Released your seats. You can now reselect seats.")
+                st.rerun()
+        with col2:
+            if st.button("Logout"):
+                for k in list(st.session_state.keys()):
+                    del st.session_state[k]
         st.stop()
     else:
-        st.success(f"🎉 Booking confirmed! You still have {rem} ticket(s) remaining.")
-        st.info("You may continue to book the rest. Or logout now.")
-        if st.button("Logout"):
-            for k in list(st.session_state.keys()):
-                del st.session_state[k]
-        st.stop()
+        # still has tickets remaining
+        if st.session_state.get("last_booked"):
+            st.success(f"🎉 Booking confirmed! Your seats: {', '.join(st.session_state['last_booked'])}.")
+        elif reserved_ids:
+            st.success(f"🎉 Booking confirmed! Seats booked: {', '.join(reserved_ids)}.")
+        else:
+            st.success("🎉 Booking confirmed!")
+        # Center the Change Seats button
+        st.markdown("<div style='text-align:center;'>", unsafe_allow_html=True)
+        if st.button("🔄 Change Seats", key="change_seats_center"):
+            freed = release_all_user_seats(st.session_state["user_name"])
+            _, row, hmap = refresh_whitelist_by_row(st.session_state.get("wl_row"))
+            if row and hmap:
+                used = int(str(row[hmap["ticketsused"] - 1]).strip() or "0")
+                new_used = max(0, used - len(freed))
+                update_tickets_used(st.session_state["wl_row"], new_used, hmap)
+            st.session_state["confirmed"] = False
+            st.session_state["selected_seats"] = []
+            st.session_state["last_booked"] = []
+            st.session_state["seats_cache"] = get_seats()
+            st.success("Released your seats. You can now reselect seats.")
+            st.rerun()
+        st.markdown("</div>", unsafe_allow_html=True)
 
 # ==========================
 # ===== LOGOUT BUTTON ======
@@ -548,5 +802,4 @@ if st.session_state.get("auth_ok", False):
             del st.session_state[k]
         # replaced experimental API with stable API
         st.rerun()
-
 
