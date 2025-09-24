@@ -36,8 +36,10 @@ creds = ServiceAccountCredentials.from_json_keyfile_dict(dict(creds_dict), scope
 client = gspread.authorize(creds)
 
 try:
-    seats_ws = client.open(SHEET_NAME).worksheet(SEATS_WS_NAME)
-    wl_ws    = client.open(SHEET_NAME).worksheet(WHITELIST_WS_NAME)
+    sh = client.open(SHEET_NAME)
+    seats_ws = sh.worksheet(SEATS_WS_NAME)
+    wl_ws    = sh.worksheet(WHITELIST_WS_NAME)
+    
 except Exception as e:
     st.error(f"⚠️ Could not open Google Sheet/worksheets. Details: {e}")
     st.stop()
@@ -84,8 +86,12 @@ def normalize_name(x: str) -> str:
     """Lowercase, strip, remove all spaces and special chars for flexible matching."""
     return re.sub(r"[^a-z0-9]", "", str(x).lower())
 
-@st.cache_data(ttl=20)
+# =============================
+# ====== SEAT FUNCTIONS =======
+# =============================
+@st.cache_data(ttl=30)
 def get_seats():
+    """Fetch all seats (cached, for UI display)."""
     rows = seats_ws.get_all_records()
     records = []
     for i, r in enumerate(rows, start=2):
@@ -100,36 +106,48 @@ def get_seats():
         records.append(r)
     return records
 
-def get_seats_fresh():
-    """Bypass cache for latest seat data (for confirmation)."""
-    st.cache_data.clear()  # clear just before reading
-    return get_seats()
+def get_seat_row(seat_id):
+    """Fetch the latest seat status directly from Sheets for a single seat."""
+    # Find the row from cached seat map (fast, local)
+    all_seats = st.session_state.get("seats_cache", [])
+    seat_info = next((s for s in all_seats if s["SeatID"] == seat_id), None)
+    if not seat_info:
+        return None
+    
+    row_number = seat_info["_row"]  # cached row index
+    values = seats_ws.row_values(row_number)
+    values += [""] * (7 - len(values))  # pad to avoid index errors
+    
+    seat_id, section, r, c, status, reserved_by, phone = values[:7]
+    status = status.strip().lower() if status else "available"
+    
+    return {
+        "SeatID": seat_id,
+        "Section": section,
+        "Row": r,
+        "Col": c,
+        "Status": status,
+        "ReservedBy": reserved_by,
+        "PhoneNo": phone,
+        "_row": row_number
+    }
 
-def update_seat_atomic(seat_id, name, phone, fresh_seats):
-    """
-    Reserve a seat without extra .cell() API calls.
-    fresh_seats = result of get_seats(), already cached.
-    """
-    seat = next((s for s in fresh_seats if s["SeatID"] == seat_id), None)
-    if not seat:
-        return False
-
-    current_status = str(seat.get("Status", "")).strip().lower()
-    if current_status not in ["", "available"]:
-        return False
-
+def update_seat(seat_info, name, phone):
+    """Mark one seat as reserved in Sheets."""
+    row_number = seat_info["_row"]
     try:
-        row = int(seat.get("_row", 0))  # add row index when loading seats
-        seats_ws.batch_update([
-            {"range": f"E{row}", "values": [["reserved"]]},
-            {"range": f"F{row}", "values": [[name]]},
-            {"range": f"G{row}", "values": [[phone]]},
-        ])
+        seats_ws.update(
+            f"E{row_number}:G{row_number}",
+            [["reserved", name, phone]]
+        )
         return True
     except Exception as e:
-        st.error(f"⚠️ Could not update seat {seat_id}: {e}")
+        st.error(f"⚠️ Could not update seat {seat_info['SeatID']}: {e}")
         return False
 
+# =============================
+# ====== WHITELIST HELPERS =====
+# =============================
 @st.cache_data(ttl=10)
 def load_whitelist_all():
     values = wl_ws.get_all_values()
@@ -210,11 +228,11 @@ def update_tickets_used(row_number, new_used, hmap):
         st.error(f"⚠️ Could not update TicketsUsed: {e}")
         return False
 
+# =============================
+# ====== RESERVATION HELPERS ===
+# =============================
 def get_user_reserved_seats_global(name, seats=None):
-    """
-    Return list of (row_num, SeatID) reserved under `name`.
-    Uses cached seats if provided.
-    """
+    """Return list of (row_num, SeatID) reserved under `name`."""
     if seats is None:
         seats = get_seats()
     reserved = []
@@ -224,10 +242,7 @@ def get_user_reserved_seats_global(name, seats=None):
     return reserved
 
 def release_all_user_seats_global(name, seats=None):
-    """
-    Release all seats reserved under `name` in the Seats worksheet.
-    Returns list of freed SeatIDs.
-    """
+    """Release all seats reserved under `name` in the Seats worksheet."""
     if seats is None:
         seats = get_seats()
     reserved = get_user_reserved_seats_global(name, seats)
@@ -246,13 +261,10 @@ def release_all_user_seats_global(name, seats=None):
     return freed
 
 def change_seats_action():
-    seats = get_seats()  # reuse cached seats
+    """Release all seats, update whitelist usage, reset session state, rerun."""
+    seats = get_seats()
     freed = release_all_user_seats_global(st.session_state["user_name"], seats)
-    """
-    Release all seats, update TicketsUsed in whitelist, clear caches and session,
-    then rerun so user immediately sees seat selection page.
-    """
-    freed = release_all_user_seats_global(st.session_state["user_name"])
+
     # refresh whitelist row (read current sheet)
     _, row, hmap = refresh_whitelist_by_row(st.session_state.get("wl_row"))
     new_used = st.session_state.get("tickets_used", 0)
@@ -266,20 +278,18 @@ def change_seats_action():
         new_used = max(0, used - len(freed))
         ok = update_tickets_used(st.session_state["wl_row"], new_used, hmap)
         try:
-            # Also refresh tickets_allowed (in case admin changed)
             allowed = int(str(row[hmap["ticketsallowed"] - 1]).strip() or "0")
         except Exception:
             allowed = st.session_state.get("tickets_allowed", allowed)
     else:
         ok = True
 
-    # Clear caches so subsequent reads are fresh (fixes "two clicks" issue).
+    # Clear caches and reset session
     try:
         st.cache_data.clear()
     except Exception:
         pass
 
-    # Reset session state for selection flow
     st.session_state["confirmed"] = False
     st.session_state["selected_seats"] = []
     st.session_state["last_booked"] = []
@@ -288,8 +298,7 @@ def change_seats_action():
     st.session_state["seats_cache"] = get_seats()
 
     if ok:
-        st.success("✅ Released your seats. No seats are currently reserved under your name. You can now reselect seats.")
-        # Rerun to immediately show the seat selection UI.
+        st.success("✅ Released your seats. You can now reselect seats.")
         st.rerun()
     else:
         st.error("Released seats but failed to update ticket usage. Please contact admin.")
@@ -641,6 +650,7 @@ if st.session_state["selected_seats"]:
         confirm_clicked = st.button("✅ Confirm", key="confirm_btn")
 
     if confirm_clicked:
+        # --- Refresh whitelist row (tickets allowed/used) ---
         _, row, hmap = refresh_whitelist_by_row(st.session_state.get("wl_row"))
         if not (row and hmap):
             st.error("Could not verify your ticket quota. Please try again.")
@@ -654,16 +664,22 @@ if st.session_state["selected_seats"]:
             st.error(f"You selected {len(st.session_state['selected_seats'])} seats but only {fresh_remaining} remaining. Please deselect some seats.")
             st.stop()
 
-        # When confirming seats
-        fresh_seats = get_seats_fresh()  # always latest from Google Sheets
+        # --- New: check each seat row individually ---
         success_list, failed_list = [], []
-
         for seat_id in list(st.session_state["selected_seats"]):
-            ok = update_seat_atomic(seat_id, st.session_state["user_name"], st.session_state["contact"], fresh_seats)
-            if ok:
-                success_list.append(seat_id)
-            else:
+            latest = get_seat_row(seat_id)  # fetch only that row live
+            if not latest:
                 failed_list.append(seat_id)
+                continue
+            if latest["Status"] == "reserved":
+                failed_list.append(seat_id)
+            else:
+                try:
+                    update_seat(latest, st.session_state["user_name"], st.session_state["contact"])
+                    success_list.append(seat_id)
+                except Exception as e:
+                    st.error(f"⚠️ Could not update {seat_id}: {e}")
+                    failed_list.append(seat_id)
 
         if failed_list:
             st.error("❌ Some seats were already taken: " + ", ".join(failed_list))
@@ -674,25 +690,28 @@ if st.session_state["selected_seats"]:
             st.session_state["seats_cache"] = get_seats()
             st.rerun()
 
-        # update tickets used immediately and store last_booked for UI
+        # --- Update tickets used immediately ---
         new_used = min(allowed, used + len(success_list))
         if update_tickets_used(st.session_state["wl_row"], new_used, hmap):
+            # update session state
             st.session_state["confirmed"] = True
             st.session_state["selected_seats"] = []
             st.session_state["last_booked"] = success_list
-            st.session_state["tickets_used"] = new_used   # ✅ update immediately
-            st.session_state["tickets_allowed"] = allowed # ✅ ensure quota reflects latest
+            st.session_state["tickets_used"] = new_used
+            st.session_state["tickets_allowed"] = allowed
+
+            # Update local cache instantly
+            for s in st.session_state["seats_cache"]:
+                if s["SeatID"] in success_list:
+                    s["Status"] = "reserved"
+                    s["ReservedBy"] = st.session_state["user_name"]
+                    s["PhoneNo"] = st.session_state["contact"]
+
             st.success(f"🎉 Booking confirmed! Your seats: {', '.join(success_list)}.")
-            st.session_state["seats_cache"] = get_seats()
             st.rerun()
         else:
             st.error("Booked seats but failed to update ticket usage. Contact admins.")
             st.stop()
-
-    if reconsider_clicked:
-        st.session_state["selected_seats"] = []
-        st.cache_data.clear()
-        st.rerun()
 
 # ==========================
 # ===== AFTER CONFIRM ======
@@ -802,5 +821,6 @@ if st.session_state.get("auth_ok", False):
             del st.session_state[k]
         # replaced experimental API with stable API
         st.rerun()
+
 
 
