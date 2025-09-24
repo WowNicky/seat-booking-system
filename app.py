@@ -132,9 +132,18 @@ def get_seat_row(seat_id):
         "_row": row_number
     }
 
-def update_seat(seat_info, name, phone):
-    """Mark one seat as reserved in Sheets."""
+def update_seat_atomic(seat_info, name, phone):
+    """Safely reserve a seat only if still available."""
     row_number = seat_info["_row"]
+
+    # Re-read the row to check status
+    values = seats_ws.row_values(row_number)
+    values += [""] * (7 - len(values))  # pad
+    status = values[4].strip().lower() if len(values) >= 5 else "available"
+
+    if status == "reserved":
+        return False  # someone else already took it
+
     try:
         seats_ws.update(
             f"E{row_number}:G{row_number}",
@@ -661,26 +670,36 @@ if st.session_state["selected_seats"]:
         fresh_remaining = allowed - used if not st.session_state.get("unlimited") else 10**9
 
         if len(st.session_state["selected_seats"]) > fresh_remaining:
-            st.error(f"You selected {len(st.session_state['selected_seats'])} seats but only {fresh_remaining} remaining. Please deselect some seats.")
+            st.error(
+                f"You selected {len(st.session_state['selected_seats'])} seats "
+                f"but only {fresh_remaining} remaining. Please deselect some seats."
+            )
             st.stop()
 
-        # --- New: check each seat row individually ---
+        # --- Check each seat row individually (atomic update) ---
         success_list, failed_list = [], []
         for seat_id in list(st.session_state["selected_seats"]):
-            latest = get_seat_row(seat_id)  # fetch only that row live
+            latest = get_seat_row(seat_id)  # fetch latest row from Sheets
             if not latest:
                 failed_list.append(seat_id)
                 continue
+
             if latest["Status"] == "reserved":
                 failed_list.append(seat_id)
-            else:
-                try:
-                    update_seat(latest, st.session_state["user_name"], st.session_state["contact"])
-                    success_list.append(seat_id)
-                except Exception as e:
-                    st.error(f"⚠️ Could not update {seat_id}: {e}")
-                    failed_list.append(seat_id)
+                continue
 
+            # Try reserving atomically
+            ok = update_seat_atomic(
+                latest,
+                st.session_state["user_name"],
+                st.session_state["contact"]
+            )
+            if ok:
+                success_list.append(seat_id)
+            else:
+                failed_list.append(seat_id)
+
+        # --- Handle failures ---
         if failed_list:
             st.error("❌ Some seats were already taken: " + ", ".join(failed_list))
 
@@ -693,19 +712,18 @@ if st.session_state["selected_seats"]:
         # --- Update tickets used immediately ---
         new_used = min(allowed, used + len(success_list))
         if update_tickets_used(st.session_state["wl_row"], new_used, hmap):
-            # update session state
             st.session_state["confirmed"] = True
             st.session_state["selected_seats"] = []
             st.session_state["last_booked"] = success_list
             st.session_state["tickets_used"] = new_used
             st.session_state["tickets_allowed"] = allowed
 
-            # Update local cache instantly
-            for s in st.session_state["seats_cache"]:
-                if s["SeatID"] in success_list:
-                    s["Status"] = "reserved"
-                    s["ReservedBy"] = st.session_state["user_name"]
-                    s["PhoneNo"] = st.session_state["contact"]
+            # Refresh cache so UI updates instantly
+            try:
+                st.cache_data.clear()
+            except Exception:
+                pass
+            st.session_state["seats_cache"] = get_seats()
 
             st.success(f"🎉 Booking confirmed! Your seats: {', '.join(success_list)}.")
             st.rerun()
@@ -821,6 +839,7 @@ if st.session_state.get("auth_ok", False):
             del st.session_state[k]
         # replaced experimental API with stable API
         st.rerun()
+
 
 
 
