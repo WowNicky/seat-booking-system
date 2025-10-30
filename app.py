@@ -674,8 +674,19 @@ if st.session_state["selected_seats"]:
             st.stop()
 
         # --- New: fetch all seats once, then check locally ---
-        all_seats = seats_ws.get_all_records()  # 1 API call only
-        seat_map = {row["SeatID"]: row for row in all_seats}
+        # Build seat_map with sheet row numbers so we can use update_seat_atomic()
+        try:
+            all_seats = seats_ws.get_all_records()  # 1 API call
+        except Exception as e:
+            st.error(f"⚠️ Could not read seats from sheet: {e}")
+            st.stop()
+
+        # include _row (sheet row number) for each entry
+        seat_map = {
+            row["SeatID"]: dict(row, **{"_row": i})
+            for i, row in enumerate(all_seats, start=2)
+            if "SeatID" in row and str(row["SeatID"]).strip() != ""
+        }
 
         success_list, failed_list = [], []
         for seat_id in list(st.session_state["selected_seats"]):
@@ -683,15 +694,19 @@ if st.session_state["selected_seats"]:
             if not latest:
                 failed_list.append(seat_id)
                 continue
-            if latest["Status"] == "reserved":
+
+            # Normalize the status value (some rows may have blanks)
+            s_status = str(latest.get("Status", "")).strip().lower() or "available"
+            if s_status == "reserved":
                 failed_list.append(seat_id)
+                continue
+
+            # Use existing atomic updater which expects seat_info with '_row'
+            ok = update_seat_atomic(latest, st.session_state["user_name"], st.session_state["contact"])
+            if ok:
+                success_list.append(seat_id)
             else:
-                try:
-                    update_seat(latest, st.session_state["user_name"], st.session_state["contact"])
-                    success_list.append(seat_id)
-                except Exception as e:
-                    st.error(f"⚠️ Could not update {seat_id}: {e}")
-                    failed_list.append(seat_id)
+                failed_list.append(seat_id)
 
         if failed_list:
             st.error("❌ Some seats were already taken: " + ", ".join(failed_list))
@@ -833,6 +848,7 @@ if st.session_state.get("auth_ok", False):
             del st.session_state[k]
         # replaced experimental API with stable API
         st.rerun()
+
 
 
 
